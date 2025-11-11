@@ -1,0 +1,468 @@
+- name: Créer le dossier artefacts
+  file:
+    path: "{{ artifacts_dir }}"
+    state: directory
+    mode: "0755"
+
+# ---------- Vérif outils (non bloquant) ----------
+- name: Vérifier oc présent
+  command: oc version --client
+  register: oc_cli
+  changed_when: false
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - oc présent' if (oc_cli.rc | default(1)) == 0 else 'KO  - oc absent' }}"
+
+- name: Vérifier helm présent
+  command: helm version --short
+  register: helm_cli
+  changed_when: false
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - helm présent' if (helm_cli.rc | default(1)) == 0 else 'KO  - helm absent' }}"
+
+# ---------- Namespace ----------
+- name: Vérifier namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ namespace }}"
+  register: nsinfo
+  failed_when: false
+
+- set_fact:
+    ns_present: "{{ (nsinfo.resources | default([]) | length) > 0 }}"
+
+- debug:
+    msg: "{{ 'OK  - namespace ' ~ namespace ~ ' Active' if ns_present else 'KO  - namespace ' ~ namespace ~ ' absent' }}"
+
+# ---------- Helm repo + chart ----------
+- set_fact:
+    _helm_repo_name: "{{ helm_repo_name | default('ibm-helm-repo') }}"
+    _chart_name: "{{ chart_name | default('ibm-licensing-cluster-scoped') }}"
+    _chart_version: "{{ chart_version | default('') }}"
+
+- name: Lister repos Helm
+  shell: helm repo list -o yaml
+  register: helm_repos
+  changed_when: false
+  failed_when: false
+
+- set_fact:
+    repo_present: "{{ (helm_repos.stdout | default('') | from_yaml | default([])) | selectattr('name','equalto', _helm_repo_name) | list | length > 0 }}"
+
+- debug:
+    msg: "{{ 'OK  - repo helm ' ~ _helm_repo_name ~ ' présent' if repo_present else 'KO  - repo helm ' ~ _helm_repo_name ~ ' absent' }}"
+
+- name: Chart trouvable (online)
+  when: repo_present and (_chart_version | length) > 0
+  shell: "helm search repo {{ _chart_name }} --versions -o yaml"
+  register: chart_search
+  changed_when: false
+  failed_when: false
+
+- set_fact:
+    chart_found: >-
+      {{
+        (chart_search.stdout | default('') | from_yaml | default([]))
+        | selectattr('version','equalto', _chart_version) | list | length > 0
+      }}
+  when: repo_present and (_chart_version | length) > 0
+
+- debug:
+    msg: >-
+      {{
+        'OK  - chart ' ~ _helm_repo_name ~ '/' ~ _chart_name ~ '@' ~ _chart_version ~ ' trouvable'
+        if (chart_found | default(false)) else
+        'KO  - chart ' ~ _helm_repo_name ~ '/' ~ _chart_name ~ '@' ~ _chart_version ~ ' introuvable'
+      }}
+  when: (_chart_version | length) > 0
+
+
+# ---------- CRDs ----------
+- name: Vérifier CRDs ibmlicensing*
+  vars:
+    crd_name: "{{ item }}"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ crd_name }}"
+  loop: "{{ crd_names }}"
+  register: crd_checks
+  failed_when: false
+
+# Option A: compteur simple (présence des CRDs)
+- name: Compter CRDs présents
+  set_fact:
+    crd_found_count: >-
+      {{
+        crd_checks.results | default([]) 
+        | map(attribute='resources') | list 
+        | map('length') 
+        | sum(start=0)
+      }}
+
+- name: Résumé CRDs Established
+  debug:
+    msg: >-
+      {{
+        (crd_found_count | int > 0)
+        | ternary('OK  - CRDs ibmlicensing* présents', 'KO  - CRDs ibmlicensing* absents')
+      }}
+
+
+    
+# ---------- RBAC ----------
+- name: Vérifier ClusterRoles
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+  register: crlist
+  failed_when: false
+
+- debug:
+    msg: >-
+      {{
+        (cluster_roles | select('in', (crlist.resources | map(attribute='metadata.name') | list)) | list | length == (cluster_roles | length))
+        | ternary('OK  - ClusterRoles présents', 'KO  - ClusterRoles manquants')
+      }}
+
+- name: Vérifier ClusterRoleBindings
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+  register: crblist
+  failed_when: false
+
+- debug:
+    msg: >-
+      {{
+        (cluster_role_bindings | select('in', (crblist.resources | map(attribute='metadata.name') | list)) | list | length == (cluster_role_bindings | length))
+        | ternary('OK  - ClusterRoleBindings présents', 'KO  - ClusterRoleBindings manquants')
+      }}
+
+# ---------- Deployments ----------
+- name: Vérifier Deployment operator
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.operator }}"
+  register: depop
+  failed_when: false
+
+- debug:
+    msg: >-
+      {{
+        (depop.resources | length > 0 and (depop.resources[0].status.availableReplicas | default(0))|int > 0)
+        | ternary('OK  - Deployment ibm-licensing-operator disponible', 'KO  - Deployment ibm-licensing-operator indisponible')
+      }}
+
+- name: Vérifier Deployment service-instance
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.instance }}"
+  register: depinst
+  failed_when: false
+
+- debug:
+    msg: >-
+      {{
+        (depinst.resources | length > 0 and (depinst.resources[0].status.availableReplicas | default(0))|int > 0)
+        | ternary('OK  - Deployment ibm-licensing-service-instance disponible', 'KO  - Deployment ibm-licensing-service-instance indisponible')
+      }}
+
+# ---------- Services ----------
+- name: Lister Services
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ namespace }}"
+  register: svcs
+  failed_when: false
+
+- debug:
+    msg: >-
+      {{
+        (services | select('in', (svcs.resources | map(attribute='metadata.name') | list)) | list | length == (services | length))
+        | ternary('OK  - Services présents', 'KO  - Services manquants')
+      }}
+
+# ---------- Route + TLS ----------
+# ---------- Route + TLS ----------
+- name: Lister toutes les Routes
+  kubernetes.core.k8s_info:
+    api_version: route.route.openshift.io/v1
+    kind: Route
+    namespace: "{{ namespace }}"
+  register: routes
+  failed_when: false
+
+# Sécuriser les sélections, puis ne lire l'index [0] que si length>0
+- set_fact:
+    _routes: "{{ routes.resources | default([]) }}"
+
+- set_fact:
+    _by_service: "{{ _routes | selectattr('spec.to.name','defined') | selectattr('spec.to.name','search','licens') | list }}"
+    _by_name:    "{{ _routes | selectattr('metadata.name','search','licens') | list }}"
+
+- set_fact:
+    ils_route_obj: "{{ (_by_service[0]) if (_by_service|length>0) else ((_by_name[0]) if (_by_name|length>0) else {}) }}"
+
+- set_fact:
+    ils_host: "{{ ils_route_obj.spec.host | default('') }}"
+    tls_term: "{{ ils_route_obj.spec.tls.termination | default('') }}"
+
+- debug:
+    msg: >-
+      {{
+        (ils_host | length > 0)
+        | ternary('OK  - Route détectée: ' ~ ils_host, 'KO  - Aucune Route détectée')
+      }}
+
+- debug:
+    msg: >-
+      {{
+        (tls_term == 'reencrypt')
+        | ternary('OK  - TLS termination reencrypt', 'INFO- TLS termination: ' ~ (tls_term | default('')))
+      }}
+  when: ils_host | length > 0
+
+# ---------- Token ----------
+- name: Récupérer le Secret ibm-licensing-token
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ namespace }}"
+    name: ibm-licensing-token
+  register: tok
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - secret ibm-licensing-token présent' if tok.resources|length>0 else 'KO  - secret ibm-licensing-token absent' }}"
+
+- set_fact:
+    ils_token: "{{ (tok.resources[0].data.token | b64decode) if (tok.resources|length>0 and (tok.resources[0].data.token | default(''))|length>0) else '' }}"
+
+# ---------- API /version + /health via Route, fallback PF API ----------
+# ---------- Sélection du Service API + port ----------
+- set_fact:
+    _svcs: "{{ svcs.resources | default([]) }}"
+
+# Choisir le service API: priorité au nom exact, sinon "licensing" hors prometheus
+- set_fact:
+    api_svc: >-
+      {{
+        (
+          (_svcs | selectattr('metadata.name','equalto','ibm-licensing-service-instance') | list | first)
+          |
+          default(_svcs | rejectattr('metadata.name','search','prometheus') | selectattr('metadata.name','search','licensing') | list | first)
+        ).metadata.name
+          | default('ibm-licensing-service-instance')
+      }}
+
+# Récupérer l'objet service retenu
+- set_fact:
+    api_svc_obj: "{{ (_svcs | selectattr('metadata.name','equalto', api_svc) | list | first) | default({}) }}"
+
+# Prendre le port du Service, pas le targetPort
+- set_fact:
+    api_service_port: >-
+      {{
+        (
+          api_svc_obj.spec.ports
+          | selectattr('name','defined')
+          | selectattr('name','search','https')
+          | list
+          | first
+          | default(api_svc_obj.spec.ports | list | first)
+        ).port | default(443)
+      }}
+    api_local_port: "{{ api_local_port | default(18443) }}"
+    api_pf_pid_file: "{{ artifacts_dir }}/pf_api.pid"
+
+- debug:
+    msg: "PF API: svc={{ api_svc }} servicePort={{ api_service_port }} -> 127.0.0.1:{{ api_local_port }}"
+
+# Stop PF existant
+- name: Stopper PF API existant
+  shell: "pkill -f \"port-forward.*{{ api_local_port }}:{{ api_service_port }}\" || true"
+  changed_when: false
+  failed_when: false
+
+# Démarrer PF (binder IPv4 et IPv6 selon environnement)
+- name: Démarrer PF API si Route absente ou non 200
+  when: (ils_host | length == 0) or ((version_http_route.status | default(0)) != 200)
+  shell: |
+    set -e
+    nohup oc -n {{ namespace }} port-forward svc/{{ api_svc }} {{ api_local_port }}:{{ api_service_port }} --address 127.0.0.1,::1 >/dev/null 2>&1 &
+    echo $! > "{{ api_pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+# Attendre ouverture du port local (plus large)
+- name: Attendre l’ouverture du port API local
+  when: (ils_host | length == 0) or ((version_http_route.status | default(0)) != 200)
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ api_local_port }}"
+    timeout: 45
+
+# Vérifs via PF
+- name: Check /version via PF API
+  when: (ils_host | length == 0) or ((version_http_route.status | default(0)) != 200)
+  uri:
+    url: "https://127.0.0.1:{{ api_local_port }}/version"
+    method: GET
+    validate_certs: no
+  register: version_http_pf
+  retries: 10
+  delay: 3
+  until: (version_http_pf.status | default(0)) == 200
+  failed_when: false
+
+- name: Check /health via PF API
+  when: ((ils_host | length == 0) or ((version_http_route.status | default(0)) != 200)) and (ils_token | length > 0)
+  uri:
+    url: "https://127.0.0.1:{{ api_local_port }}/health?token={{ ils_token | urlencode }}"
+    method: GET
+    validate_certs: no
+  register: health_http_pf
+  retries: 10
+  delay: 3
+  until: (health_http_pf.status | default(0)) == 200
+  failed_when: false
+
+# Stop PF proprement
+- name: Stopper proprement le PF API
+  shell: |
+    test -f "{{ api_pf_pid_file }}" && kill $(cat "{{ api_pf_pid_file }}") >/dev/null 2>&1 || true
+    rm -f "{{ api_pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+# ---------- Prometheus /metrics via PF ----------
+- set_fact:
+    prom_svc: >-
+      {{
+        (
+          (svcs.resources | default([]) | map(attribute='metadata.name') | select('search','prometheus') | list | first)
+          | default('ibm-licensing-service-prometheus')
+        )
+      }}
+    prometheus_target_port: "{{ prometheus_target_port | default(8081) }}"
+    health_portforward_local_port: "{{ health_portforward_local_port | default(18082) }}"
+    pf_pid_file: "{{ artifacts_dir }}/pf_prom.pid"
+
+- debug:
+    msg: "Service Prometheus ciblé: {{ prom_svc }}:{{ prometheus_target_port }} -> 127.0.0.1:{{ health_portforward_local_port }}"
+
+- name: Stopper PF Prom existant
+  shell: "pkill -f \"port-forward.*{{ health_portforward_local_port }}:{{ prometheus_target_port }}\" || true"
+  changed_when: false
+  failed_when: false
+
+- name: Démarrer PF Prom
+  shell: |
+    set -e
+    nohup oc -n {{ namespace }} port-forward svc/{{ prom_svc }} {{ health_portforward_local_port }}:{{ prometheus_target_port }} --address 127.0.0.1 >/dev/null 2>&1 &
+    echo $! > "{{ pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+- name: Attendre l’ouverture du port local
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ health_portforward_local_port }}"
+    timeout: 20
+
+- name: GET /metrics local
+  uri:
+    url: "http://127.0.0.1:{{ health_portforward_local_port }}/metrics"
+    method: GET
+  register: metrics_http
+  retries: 5
+  delay: 2
+  until: (metrics_http.status | default(0)) in [200]
+  failed_when: false
+  changed_when: false
+
+- name: Stopper PF Prom
+  shell: |
+    test -f "{{ pf_pid_file }}" && kill $(cat "{{ pf_pid_file }}") >/dev/null 2>&1 || true
+    rm -f "{{ pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - Prometheus /metrics accessible' if (metrics_http.status | default(0)) == 200 else 'KO  - Prometheus /metrics inaccessible' }}"
+
+# ---------- Export snapshot .zip (priorité /snapshot, fallback /api/v1/export) ----------
+- block:
+    - name: Exporter snapshot via Route
+      when: ils_host | length > 0 and ils_token | length > 0
+      get_url:
+        url: "https://{{ ils_host }}/snapshot?token={{ ils_token | urlencode }}"
+        dest: "{{ artifacts_dir }}/ils-snapshot-{{ ansible_date_time.iso8601_basic }}.zip"
+        validate_certs: no
+        force: true
+      register: export_res_route
+      failed_when: false
+
+    - name: Exporter snapshot via PF API
+      when: (export_res_route.status | default(0)) != 200 and ils_token | length > 0 and (version_http_pf.status | default(0)) == 200
+      get_url:
+        url: "https://127.0.0.1:{{ api_local_port }}/snapshot?token={{ ils_token | urlencode }}"
+        dest: "{{ artifacts_dir }}/ils-snapshot-{{ ansible_date_time.iso8601_basic }}.zip"
+        validate_certs: no
+        force: true
+      register: export_res_pf
+      failed_when: false
+
+    - name: Fallback /api/v1/export si /snapshot KO
+      when: ((export_res_route.status | default(0)) != 200) and ((export_res_pf.status | default(0)) != 200) and ils_token | length > 0
+      get_url:
+        url: >-
+          {{
+            ils_host | length > 0
+            | ternary('https://' ~ ils_host ~ '/api/v1/export?token=' ~ (ils_token | urlencode),
+                      'https://127.0.0.1:' ~ api_local_port|string ~ '/api/v1/export?token=' ~ (ils_token | urlencode))
+          }}
+        dest: "{{ artifacts_dir }}/ils-snapshot-{{ ansible_date_time.iso8601_basic }}.zip"
+        validate_certs: no
+        force: true
+      register: export_res_legacy
+      failed_when: false
+
+    - name: OK/KO export
+      debug:
+        msg: >-
+          {{
+            (export_res_route.dest | default('') | length > 0) or
+            (export_res_pf.dest    | default('') | length > 0) or
+            (export_res_legacy.dest| default('') | length > 0)
+            | ternary('OK  - snapshot ZIP exporté', 'KO  - Export snapshot échoué')
+          }}
+  rescue:
+    - debug:
+        msg: "KO  - Export snapshot échoué"
+
+# ---------- Bilan ----------
+- set_fact:
+    v_ok: "{{ (version_http_route.status | default(0)) == 200 or (version_http_pf.status | default(0)) == 200 }}"
+    h_ok: "{{ (health_http_route.status  | default(0)) == 200 or (health_http_pf.status  | default(0)) == 200 }}"
+    m_ok: "{{ (metrics_http.status | default(0)) == 200 }}"
+    audit_ok: "{{ v_ok and h_ok and m_ok }}"
+
+- debug:
+    msg: |
+      ==== Résultat ====
+      Version: {{ 'OK' if v_ok else 'KO' }}
+      Health : {{ 'OK' if h_ok else 'KO' }}
+      Metrics: {{ 'OK' if m_ok else 'KO' }}
+      {{ '✅ AUDIT: OK' if audit_ok else '❌ AUDIT: KO' }}
+

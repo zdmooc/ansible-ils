@@ -1,0 +1,5 @@
+- name: "Pré-setup ILS: namespace + secret + repo"
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - install

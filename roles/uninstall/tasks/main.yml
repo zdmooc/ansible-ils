@@ -1,0 +1,102 @@
+# Namespaced
+- name: Delete IBMLicensing CR (best effort)
+  kubernetes.core.k8s:
+    state: absent
+    api_version: operator.ibm.com/v1alpha1
+    kind: IBMLicensing
+    name: instance
+    namespace: "{{ ns }}"
+  ignore_errors: true
+
+- name: Delete deployments
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ ns }}"
+  loop:
+    - ibm-licensing-operator
+    - ibm-licensing-service-instance
+  ignore_errors: true
+
+- name: Delete services
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Service
+    name: "{{ item }}"
+    namespace: "{{ ns }}"
+  loop:
+    - ibm-licensing-service-instance
+    - ibm-licensing-service-prometheus
+  ignore_errors: true
+
+- name: Delete route
+  kubernetes.core.k8s:
+    state: absent
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: ibm-licensing-service-instance
+    namespace: "{{ ns }}"
+  ignore_errors: true
+
+# roles/uninstall/tasks/main.yml
+- name: Wait pods gone
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ ns }}"
+  register: pods_left
+  retries: 20
+  delay: 3
+  until: >-
+    (pods_left.resources
+     | rejectattr('metadata.deletionTimestamp','defined')
+     | list | length) == 0
+  ignore_errors: true
+
+# Cluster-scoped RBAC
+- name: Delete ClusterRoles
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    name: "{{ item }}"
+  loop:
+    - ibm-licensing-operator
+    - ibm-licensing-default-reader
+    - ibm-license-service
+    - ibm-license-service-restricted
+    - ibm-licensing-opreqs-role
+  ignore_errors: true
+
+- name: Delete ClusterRoleBindings
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    name: "{{ item }}"
+  loop:
+    - ibm-licensing-operator
+    - ibm-licensing-default-reader
+    - ibm-license-service
+    - ibm-license-service-restricted
+    - ibm-licensing-opreqs-role-binding
+    - ibm-license-service-cluster-monitoring-view
+  ignore_errors: true
+
+# CRDs (optionnel)
+- name: Delete CRDs (purge_crds=true)
+  when: purge_crds | bool
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  loop:
+    - ibmlicensingdefinitions.operator.ibm.com
+    - ibmlicensingmetadatas.operator.ibm.com
+    - ibmlicensingquerysources.operator.ibm.com
+    - ibmlicensings.operator.ibm.com
+  ignore_errors: true

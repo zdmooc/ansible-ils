@@ -1,0 +1,19 @@
+ns: ibm-licensing
+
+# Helm repo + chart
+helm_repo_name: ibm-helm-repo
+helm_repo_url: https://raw.githubusercontent.com/IBM/charts/master/repo/ibm-helm
+release: ibm-licensing-cluster-scoped
+chart_repo: ibm-helm-repo
+chart_name: ibm-licensing-cluster-scoped
+chart_version: 4.2.19+20251031.131912.0
+
+# Entitlement (optionnel)
+entitlement_key: ""           # laisser vide si non utilisé
+entitlement_user: cp
+entitlement_server: cp.icr.io
+entitlement_secret_name: ibm-entitlement-key
+
+# Route
+route_name: ibm-licensing-service-instance
+

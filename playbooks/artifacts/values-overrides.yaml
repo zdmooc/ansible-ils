@@ -1,0 +1,5 @@
+global:
+  licenseAccept: true
+  imagePullSecrets:
+    []
+

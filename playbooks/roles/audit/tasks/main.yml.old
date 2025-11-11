@@ -1,0 +1,286 @@
+- name: Créer le dossier artefacts
+  file:
+    path: "{{ artifacts_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Vérifier namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ namespace }}"
+  register: nsinfo
+  failed_when: false
+
+- name: Évaluer présence du namespace
+  set_fact:
+    ns_present: "{{ (nsinfo is defined) and ('resources' in nsinfo) and ((nsinfo.resources | length) > 0) }}"
+
+- debug:
+    msg: "{{ 'OK  - namespace ' ~ namespace ~ ' présent' if ns_present else 'KO  - namespace ' ~ namespace ~ ' absent' }}"
+
+- name: Lister repos Helm
+  shell: helm repo list -o yaml
+  register: helm_repos
+  changed_when: false
+  failed_when: false
+
+- name: Repo présent ?
+  set_fact:
+    repo_present: "{{ (helm_repos.stdout | default('') | from_yaml | default([])) | selectattr('name','equalto', helm_repo_name) | list | length > 0 }}"
+- debug:
+    msg: "{{ 'OK  - repo helm ' ~ helm_repo_name ~ ' présent' if repo_present else 'KO  - repo helm ' ~ helm_repo_name ~ ' absent' }}"
+
+- name: Chart trouvable (online)
+  when: offline_chart_path | length == 0
+  shell: "helm search repo {{ helm_repo_name }}/{{ chart_name }} --version {{ chart_version }} -o yaml"
+  register: chart_search
+  changed_when: false
+  failed_when: false
+- debug:
+    msg: "{{ 'OK  - chart ' ~ helm_repo_name ~ '/' ~ chart_name ~ '@' ~ chart_version ~ ' trouvable' if (chart_search.stdout | default('') | from_yaml | default([]) | length) > 0 else 'KO  - chart introuvable' }}"
+  when: offline_chart_path | length == 0
+
+- name: Vérifier CRDs ibmlicensing*
+  vars:
+    crd_name: "{{ item }}"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ crd_name }}"
+  loop: "{{ crd_names }}"
+  register: crd_checks
+  failed_when: false
+
+- name: Compter CRDs trouvés
+  set_fact:
+    crd_found_count: 0
+
+- name: Accumuler CRDs trouvés
+  set_fact:
+    crd_found_count: "{{ (crd_found_count | int) + ((item.resources | default([])) | length | int) }}"
+  loop: "{{ crd_checks.results | default([]) }}"
+
+- name: Résumé CRDs
+  debug:
+    msg: "{{ 'OK  - CRDs ibmlicensing* présents' if crd_found_count|int > 0 else 'KO  - CRDs ibmlicensing* absents' }}"
+
+- name: Vérifier ClusterRoles
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+  register: crlist
+  failed_when: false
+- debug:
+    msg: >-
+      {{
+        (cluster_roles | select('in', (crlist.resources | map(attribute='metadata.name') | list)) | list | length == (cluster_roles | length))
+        | ternary('OK  - ClusterRoles présents', 'KO  - ClusterRoles manquants')
+      }}
+
+- name: Vérifier ClusterRoleBindings
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+  register: crblist
+  failed_when: false
+- debug:
+    msg: >-
+      {{
+        (cluster_role_bindings | select('in', (crblist.resources | map(attribute='metadata.name') | list)) | list | length == (cluster_role_bindings | length))
+        | ternary('OK  - ClusterRoleBindings présents', 'KO  - ClusterRoleBindings manquants')
+      }}
+
+- name: Vérifier Deployment operator
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.operator }}"
+  register: depop
+  failed_when: false
+- debug:
+    msg: >-
+      {{
+        (depop.resources | length > 0 and (depop.resources[0].status.readyReplicas | default(0))|int > 0)
+        | ternary('OK  - Deployment operator Available', 'KO  - Deployment operator absent/NotReady')
+      }}
+
+- name: Vérifier Deployment service-instance
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.instance }}"
+  register: depinst
+  failed_when: false
+- debug:
+    msg: >-
+      {{
+        (depinst.resources | length > 0 and (depinst.resources[0].status.readyReplicas | default(0))|int > 0)
+        | ternary('OK  - Deployment instance Available', 'KO  - Deployment instance absent/NotReady')
+      }}
+
+- name: Vérifier Services
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ namespace }}"
+  register: svcs
+  failed_when: false
+- debug:
+    msg: >-
+      {{
+        (services | select('in', (svcs.resources | map(attribute='metadata.name') | list)) | list | length == (services | length))
+        | ternary('OK  - Services présents', 'KO  - Services manquants')
+      }}
+
+# --- Route + token + /version + /health avec retries non bloquants ---
+- name: Obtenir la Route ILS
+  kubernetes.core.k8s_info:
+    api_version: route.route.openshift.io/v1
+    kind: Route
+    namespace: "{{ namespace }}"
+    name: "{{ route_name | default('ibm-licensing-service-instance') }}"
+  register: rinfo
+  failed_when: false
+
+- name: Extraire host de la Route si présente
+  when: rinfo.resources | length > 0
+  set_fact:
+    ils_host: "{{ rinfo.resources[0].spec.host }}"
+
+- debug:
+    msg: "{{ 'OK  - Route trouvée: ' ~ ils_host if ils_host is defined else 'KO  - Route absente' }}"
+
+- name: Récupérer le Secret ibm-licensing-token
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ namespace }}"
+    name: ibm-licensing-token
+  register: tok
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - Secret ibm-licensing-token présent' if tok.resources|length>0 else 'KO  - Secret ibm-licensing-token absent' }}"
+
+- name: Extraire token depuis le Secret
+  when: tok.resources|length>0 and (tok.resources[0].data.token | default('')) | length > 0
+  set_fact:
+    ils_token: "{{ tok.resources[0].data.token | b64decode }}"
+
+- name: Check /version (200)
+  when: ils_host is defined
+  uri:
+    url: "https://{{ ils_host }}/version"
+    method: GET
+    validate_certs: no
+  register: version_http
+  retries: 10
+  delay: 3
+  until: (version_http.status | default(0)) == 200
+  failed_when: false
+
+- name: Check /health (200)
+  when: ils_host is defined and (ils_token | default('')) | length > 0
+  uri:
+    url: "https://{{ ils_host }}/health?token={{ ils_token | urlencode }}"
+    method: GET
+    validate_certs: no
+  register: health_http
+  retries: 10
+  delay: 3
+  until: (health_http.status | default(0)) == 200
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - /version=200' if (version_http.status | default(0)) == 200 else 'KO  - /version non accessible' }}"
+- debug:
+    msg: "{{ 'OK  - /health=200' if (health_http.status | default(0)) == 200 else 'KO  - /health non accessible' }}"
+
+# --- /metrics via port-forward fiable ---
+- set_fact:
+    # essaie d’auto-déduire le service prometheus existant, sinon valeur par défaut
+    prom_svc: >-
+      {{
+        (
+          (svcs.resources | default([]) | map(attribute='metadata.name') | select('search','prometheus') | list | first)
+          | default('ibm-licensing-service-prometheus')
+        )
+      }}
+    pf_pid_file: "{{ artifacts_dir }}/pf_prom.pid"
+
+- name: Stopper port-forward existant sur ce port
+  shell: "pkill -f \"port-forward.*{{ health_portforward_local_port }}:{{ prometheus_target_port }}\" || true"
+  changed_when: false
+  failed_when: false
+
+- name: Démarrer port-forward en arrière-plan et stocker le PID
+  shell: |
+    set -e
+    nohup oc -n {{ namespace }} port-forward svc/{{ prom_svc }} {{ health_portforward_local_port }}:{{ prometheus_target_port }} --address 127.0.0.1 >/dev/null 2>&1 &
+    echo $! > "{{ pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+- name: Attendre l’ouverture du port local
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ health_portforward_local_port }}"
+    timeout: 20
+
+- name: GET /metrics local
+  uri:
+    url: "http://127.0.0.1:{{ health_portforward_local_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: metrics_http
+  failed_when: false
+  changed_when: false
+
+- name: Stopper proprement le port-forward
+  shell: |
+    test -f "{{ pf_pid_file }}" && kill $(cat "{{ pf_pid_file }}") >/dev/null 2>&1 || true
+    rm -f "{{ pf_pid_file }}"
+  changed_when: false
+  failed_when: false
+
+- debug:
+    msg: "{{ 'OK  - /metrics accessible' if (metrics_http.status | default(0)) == 200 else 'KO  - /metrics non accessible' }}"
+
+# --- Export snapshot ILS non bloquant ---
+- block:
+    - name: Exporter snapshot ILS
+      when: ils_host is defined and (ils_token | default('')) | length > 0
+      get_url:
+        url: "https://{{ ils_host }}/api/v1/export?token={{ ils_token | urlencode }}"
+        dest: "{{ artifacts_dir }}/ils-snapshot-{{ ansible_date_time.iso8601_basic }}.zip"
+        validate_certs: no
+        force: true
+      register: export_res
+      failed_when: false
+
+    - name: OK/KO export
+      when: export_res is defined and (export_res.dest | default('')) | length > 0
+      debug:
+        msg: "OK  - snapshot ZIP: {{ export_res.dest }}"
+  rescue:
+    - debug:
+        msg: "KO  - Export snapshot échoué"
+
+# --- Bilan ---
+- name: Bilan
+  set_fact:
+    audit_ok: >-
+      {{
+        ((version_http.status | default(0)) == 200) and
+        ((health_http.status  | default(0)) == 200) and
+        ((metrics_http.status | default(0)) == 200)
+      }}
+
+- debug:
+    msg: |
+      ==== Résultat ====
+      {{ '✅ AUDIT: OK' if audit_ok else '❌ AUDIT: KO' }}
+

@@ -1,0 +1,75 @@
+# Harmonise ns et évite les refs à "namespace"
+- name: Resolve ns
+  set_fact:
+    ns: "{{ ns | default(namespace | default('ibm-licensing')) }}"
+
+- name: Ensure namespace present
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ns }}"
+
+# Secret entitlement uniquement si clé fournie
+- name: Build Docker config JSON for IBM Entitled Registry
+  set_fact:
+    docker_cfg_obj:
+      auths:
+        "{{ entitlement_server }}":
+          username: "{{ entitlement_user }}"
+          password: "{{ entitlement_key }}"
+          email: "none"
+          auth: "{{ (entitlement_user + ':' + entitlement_key) | b64encode }}"
+  when: entitlement_key | length > 0
+
+- name: Create/update entitlement docker-registry secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ entitlement_secret_name }}"
+        namespace: "{{ ns }}"
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ docker_cfg_obj | to_json | b64encode }}"
+  when: entitlement_key | length > 0
+
+- name: Ensure Helm repo added
+  shell: |
+    set -e
+    helm repo add {{ helm_repo_name }} {{ helm_repo_url }} --force-update
+    helm repo update
+  args: { executable: /bin/bash }
+  register: helm_repo_add
+  changed_when: true
+  failed_when: false
+
+# PASS 1: CRDs + operator
+- name: "=== PASS 1: CRDs + operator ==="
+  import_tasks: pass1_crds_rbac_operator.yml
+
+# PASS 2: instance + waits
+- name: "=== PASS 2: instance + waits ==="
+  import_tasks: pass2_cr_instance.yml
+
+# Route reencrypt standard (service écoute 8080)
+- name: Ensure Route reencrypt
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: "{{ route_name }}"
+        namespace: "{{ ns }}"
+      spec:
+        to: { kind: Service, name: ibm-licensing-service-instance, weight: 100 }
+        port: { targetPort: 8080 }
+        tls:
+          termination: reencrypt
+          insecureEdgeTerminationPolicy: Redirect
+

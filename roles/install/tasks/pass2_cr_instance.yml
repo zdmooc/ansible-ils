@@ -1,0 +1,49 @@
+- name: "Helm template pass2 (ensure CR + services) | apply"
+  shell: |
+    set -o pipefail
+    helm template "{{ release_name }}" "{{ helm_repo_name }}/{{ chart_name }}" \
+      --namespace "{{ namespace }}" \
+      --version "{{ chart_version }}" \
+      -f "{{ artifacts_dir }}/values-overrides.yaml" \
+      --include-crds \
+    | oc apply -f -
+  args: { executable: /bin/bash }
+  register: helm_pass2
+  changed_when: "'created' in helm_pass2.stdout or 'configured' in helm_pass2.stdout"
+  failed_when: false
+
+# Fallback: si le CR n'est pas rendu par le chart, on le crée explicitement
+- name: "Ensure IBMLicensing CR present (fallback)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.ibm.com/v1alpha1
+      kind: IBMLicensing
+      metadata:
+        name: instance
+        namespace: "{{ namespace }}"
+      spec:
+        datasource: datacollector
+
+- name: Wait operator Deployment Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.operator }}"
+  register: depop
+  retries: "{{ rollout_retries | int }}"
+  delay: "{{ rollout_delay | int }}"
+  until: (depop.resources | length > 0) and ((depop.resources[0].status.readyReplicas | default(0)) | int > 0)
+
+- name: Wait instance Deployment Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ namespace }}"
+    name: "{{ deployments.instance }}"
+  register: depinst
+  retries: "{{ rollout_retries | int }}"
+  delay: "{{ rollout_delay | int }}"
+  until: (depinst.resources | length > 0) and ((depinst.resources[0].status.readyReplicas | default(0)) | int > 0)
+

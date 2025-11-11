@@ -1,0 +1,9 @@
+global:
+  licenseAccept: true
+  imagePullSecrets:
+{% if entitlement_key|default('')|length > 0 %}
+    - "{{ entitlement_secret_name }}"
+{% else %}
+    []
+{% endif %}
+

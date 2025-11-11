@@ -1,0 +1,24 @@
+- name: Prérequis locaux
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Vérifier oc
+      shell: oc version --client
+      register: ocver
+      changed_when: false
+      failed_when: ocver.rc != 0
+    - debug: { msg: "OK  - oc présent" }
+
+    - name: Vérifier helm
+      shell: helm version --short
+      register: helmver
+      changed_when: false
+      failed_when: helmver.rc != 0
+    - debug: { msg: "OK  - helm présent" }
+
+    - name: Contexte kubectl courant
+      shell: oc config current-context
+      register: ctx
+      changed_when: false
+      failed_when: false
+    - debug: { msg: "Contexte: {{ (ctx.stdout | default('inconnu')) }}" }

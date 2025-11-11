@@ -1,0 +1,35 @@
+namespace: ibm-licensing
+artifacts_dir: "{{ playbook_dir | default('.') }}/artifacts"
+
+# Optionnels
+helm_repo_name: ibm-helm-repo
+chart_name: ibm-licensing-cluster-scoped
+chart_version: ""
+crd_names:
+  - ibmlicensingdefinitions.operator.ibm.com
+  - ibmlicensingmetadatas.operator.ibm.com
+  - ibmlicensingquerysources.operator.ibm.com
+  - ibmlicensings.operator.ibm.com
+cluster_roles:
+  - ibm-licensing-operator
+  - ibm-licensing-default-reader
+  - ibm-license-service
+  - ibm-license-service-restricted
+  - ibm-licensing-opreqs-role
+cluster_role_bindings:
+  - ibm-licensing-operator
+  - ibm-licensing-default-reader
+  - ibm-license-service
+  - ibm-license-service-restricted
+  - ibm-licensing-opreqs-role-binding
+  - ibm-license-service-cluster-monitoring-view
+deployments:
+  operator: ibm-licensing-operator
+  instance: ibm-licensing-service-instance
+services:
+  - ibm-licensing-service-instance
+  - ibm-licensing-service-prometheus
+route_name: ibm-licensing-service-instance
+api_local_port: 18443
+health_portforward_local_port: 18082
+

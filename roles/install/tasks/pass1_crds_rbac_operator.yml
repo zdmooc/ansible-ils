@@ -1,0 +1,34 @@
+- name: Ensure artifacts dir
+  file:
+    path: "{{ artifacts_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render values overrides
+  template:
+    src: values-overrides.yaml.j2
+    dest: "{{ artifacts_dir }}/values-overrides.yaml"
+
+- name: "Helm template pass1 (CRDs+operator) | apply best-effort"
+  shell: |
+    set -o pipefail
+    helm template "{{ release_name }}" "{{ helm_repo_name }}/{{ chart_name }}" \
+      --namespace "{{ namespace }}" \
+      --version "{{ chart_version }}" \
+      -f "{{ artifacts_dir }}/values-overrides.yaml" \
+      --include-crds \
+    | oc apply -f - || true
+  args: { executable: /bin/bash }
+  register: helm_pass1
+  changed_when: "'created' in helm_pass1.stdout or 'configured' in helm_pass1.stdout"
+  failed_when: false
+
+- name: Wait CRDs Established
+  shell: oc wait --for=condition=Established "crd/{{ item }}" --timeout={{ (crd_wait_retries|default(60))|int * (crd_wait_delay|default(5))|int }}s
+  args: { executable: /bin/bash }
+  register: crd_wait
+  retries: "{{ crd_wait_retries | int }}"
+  delay: "{{ crd_wait_delay | int }}"
+  until: crd_wait.rc == 0
+  loop: "{{ crd_names }}"
+

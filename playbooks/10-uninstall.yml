@@ -1,0 +1,9 @@
+- name: Uninstall ILS
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ns: "{{ ns | default('ibm-licensing') }}"
+    purge_crds: "{{ purge_crds | default(false) }}"
+  tasks:
+    - ansible.builtin.import_role:
+        name: uninstall

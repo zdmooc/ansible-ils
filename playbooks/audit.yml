@@ -1,0 +1,9 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: ibm-licensing
+    artifacts_dir: "{{ playbook_dir }}/artifacts"
+  roles:
+    - audit
+

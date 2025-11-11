@@ -1,0 +1,51 @@
+namespace: ibm-licensing
+helm_repo_name: ibm-helm-repo
+helm_repo_url: https://raw.githubusercontent.com/IBM/charts/master/repo/ibm-helm
+chart_name: ibm-licensing-cluster-scoped
+chart_version: "4.2.19+20251031.131912.0"
+release_name: ibm-licensing-cluster-scoped
+
+create_entitlement_secret: true
+entitlement_secret_name: ibm-entitlement-key
+entitlement_key: ""
+
+offline_chart_path: ""
+
+crd_wait_retries: 40
+crd_wait_delay: 3
+rollout_retries: 60
+rollout_delay: 5
+route_wait_retries: 40
+route_wait_delay: 3
+
+artifacts_dir: artifacts
+
+crd_names:
+  - ibmlicensingdefinitions.operator.ibm.com
+  - ibmlicensingmetadatas.operator.ibm.com
+  - ibmlicensingquerysources.operator.ibm.com
+  - ibmlicensings.operator.ibm.com
+
+cluster_roles:
+  - ibm-licensing-operator
+  - ibm-licensing-default-reader
+  - ibm-license-service
+
+cluster_role_bindings:
+  - ibm-licensing-operator
+  - ibm-licensing-default-reader
+  - ibm-license-service
+
+deployments:
+  operator: ibm-licensing-operator
+  instance: ibm-licensing-service-instance
+
+services:
+  - ibm-licensing-service-instance
+  - ibm-licensing-service-prometheus
+
+route_name: ibm-licensing-service-instance
+health_portforward_local_port: 18082
+prometheus_target_port: 8081
+entitlement_user: "cp"
+entitlement_server: "cp.icr.io"
