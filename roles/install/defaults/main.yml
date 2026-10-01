@@ -9,7 +9,7 @@ chart_name: ibm-licensing-cluster-scoped
 chart_version: 4.2.19+20251031.131912.0
 
 # Entitlement (optionnel)
-entitlement_key: ""           # laisser vide si non utilisé
+entitlement_key: ""  # runtime-only; never commit entitlement credentials
 entitlement_user: cp
 entitlement_server: cp.icr.io
 entitlement_secret_name: ibm-entitlement-key
