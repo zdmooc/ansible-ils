@@ -1,0 +1,11 @@
+.venv/
+.env
+.env.*
+*.kubeconfig
+*.key
+*.pem
+*.bak
+*.old
+*.old2
+playbooks/artifacts/*.zip
+playbooks/artifacts/*.tar.gz
