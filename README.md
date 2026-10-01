@@ -1,5 +1,7 @@
 # ansible-ils — IBM License Service on OpenShift (CRC) via Ansible + Helm
 
+> **O8 status — 2026-10-01:** `KEEP / IBM LICENSE SERVICE SPECIALIST / REQUALIFICATION_REQUIRED`. Le dépôt n'est pas une plateforme OpenShift générique. Une ancienne valeur d'entitlement a été retirée de `main`; l'historique Git doit être considéré exposé et la valeur doit être révoquée/rotatée si elle était utilisable. Les claims CRC historiques ne sont pas promus en preuve runtime actuelle sans replay observé.
+
 > Déploiement idempotent d’**IBM License Service (ILS)** sur **OpenShift Local/CRC** avec Ansible, Helm, Make et scripts.
 
 ---
